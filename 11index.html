@@ -1,0 +1,224 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Solana Cluster Monitor</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; }
+  </style>
+</head>
+<body class="bg-slate-50 text-slate-900">
+  <div class="max-w-6xl mx-auto p-6 space-y-6">
+    <header class="flex items-center justify-between">
+      <h1 class="text-2xl font-semibold">Solana Cluster Monitor</h1>
+      <a href="http://localhost:8000/docs" target="_blank" class="text-sm text-blue-600 underline">API Docs</a>
+    </header>
+
+    <!-- Controls -->
+    <section class="bg-white rounded-2xl shadow p-5">
+      <div class="grid md:grid-cols-5 gap-4">
+        <div class="md:col-span-3">
+          <label class="block text-sm font-medium mb-1">Parent wallet address</label>
+          <input id="wallet" class="w-full rounded-xl border px-3 py-2 mono" placeholder="Enter a mainnet wallet address" />
+          <p class="text-xs text-slate-500 mt-1">
+            Tip: paste a wallet you tested in Swagger; you can also try the Jupiter sample the client sent.
+          </p>
+        </div>
+        <div>
+          <label class="block text-sm font-medium mb-1">Min children (3–30)</label>
+          <input id="minChildren" type="number" min="3" max="30" value="5" class="w-full rounded-xl border px-3 py-2" />
+        </div>
+        <div>
+          <label class="block text-sm font-medium mb-1">Funding window (mins)</label>
+          <input id="fundingWindow" type="number" min="1" max="30" value="5" class="w-full rounded-xl border px-3 py-2" />
+        </div>
+      </div>
+
+      <div class="mt-4 flex items-center gap-3">
+        <button id="fetchBtn" class="rounded-xl bg-slate-900 text-white px-4 py-2 hover:bg-black">Find clusters</button>
+
+        <label class="inline-flex items-center gap-2 text-sm">
+          <input id="autoRefresh" type="checkbox" class="rounded" />
+          Auto-refresh
+        </label>
+        <input id="refreshSec" type="number" min="10" value="30" class="w-20 rounded-xl border px-2 py-1 text-sm" />
+        <span class="text-sm text-slate-500">sec</span>
+
+        <div class="ml-auto text-sm text-slate-500" id="lastRefreshed"></div>
+      </div>
+    </section>
+
+    <!-- Summary -->
+    <section id="summary" class="hidden bg-white rounded-2xl shadow p-5">
+      <h2 class="text-lg font-medium mb-3">Summary</h2>
+      <div class="grid sm:grid-cols-2 lg:grid-cols-4 gap-4">
+        <div class="rounded-xl border p-4"><div class="text-xs text-slate-500">Transactions scanned</div><div id="txCnt" class="text-xl font-semibold">–</div></div>
+        <div class="rounded-xl border p-4"><div class="text-xs text-slate-500">Clusters found</div><div id="clustersFound" class="text-xl font-semibold">–</div></div>
+        <div class="rounded-xl border p-4"><div class="text-xs text-slate-500">Total parents</div><div id="totalParents" class="text-xl font-semibold">–</div></div>
+        <div class="rounded-xl border p-4"><div class="text-xs text-slate-500">Total children</div><div id="totalChildren" class="text-xl font-semibold">–</div></div>
+      </div>
+    </section>
+
+    <!-- Results -->
+    <section class="bg-white rounded-2xl shadow p-0 overflow-hidden">
+      <div class="border-b px-5 py-3 flex items-center justify-between">
+        <h2 class="text-lg font-medium">Detected Clusters</h2>
+        <div id="status" class="text-sm text-slate-500"></div>
+      </div>
+      <div id="results" class="divide-y"></div>
+      <div id="empty" class="hidden p-6 text-sm text-slate-500">No clusters found for the current parameters.</div>
+    </section>
+
+    <footer class="text-xs text-slate-400 text-center">Demo UI (static file). API base: <span class="mono" id="apiBaseTxt"></span></footer>
+  </div>
+
+  <script>
+    // ====== CONFIG ======
+    const API_BASE = localStorage.getItem("apiBase") || "http://localhost:8000";
+    document.getElementById('apiBaseTxt').textContent = API_BASE;
+
+    // ====== Helpers ======
+    const $ = s => document.querySelector(s);
+    const short = a => a ? a.slice(0,4) + "…" + a.slice(-4) : "";
+    const fmt = n => typeof n === "number" ? n.toLocaleString() : n;
+
+    function copy(text) {
+      navigator.clipboard.writeText(text);
+    }
+
+    function row(cluster) {
+      const parent = cluster.parent_wallet || cluster.parent || "";
+      const kids   = cluster?.funding_stats?.total_children_funded ?? cluster.total_children ?? 0;
+      const amount = cluster?.funding_stats?.total_amount_sent ?? 0;
+      const token  = cluster?.funding_stats?.funding_token_symbol || "SOL";
+      const formed = (cluster?.formation_time && cluster?.formation_window)
+          ? `${cluster.formation_time} • ${cluster.formation_window}`
+          : (cluster.formation_time || "—");
+
+      const swapped = cluster?.swap_stats?.children_swapped ?? 0;
+      const pending = cluster?.swap_stats?.children_pending ?? 0;
+
+      return `
+      <div class="p-5">
+        <div class="flex flex-col md:flex-row md:items-center md:justify-between gap-3">
+          <div class="space-y-1">
+            <div class="text-sm text-slate-500">Parent</div>
+            <div class="mono font-medium">${parent ? short(parent) : "unknown"}
+              ${parent ? `<button class="ml-2 text-xs text-blue-600 underline" onclick='copy("${parent}")'>copy</button>` : ""}
+            </div>
+          </div>
+
+          <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
+            <div><div class="text-xs text-slate-500">Children</div><div class="font-semibold">${fmt(kids)}</div></div>
+            <div><div class="text-xs text-slate-500">Total Sent</div><div class="font-semibold">${fmt(amount)} ${token}</div></div>
+            <div><div class="text-xs text-slate-500">Swapped</div><div class="font-semibold">${fmt(swapped)}</div></div>
+            <div><div class="text-xs text-slate-500">Pending</div><div class="font-semibold">${fmt(pending)}</div></div>
+          </div>
+        </div>
+
+        <div class="mt-3 text-xs text-slate-500">Formed: ${formed}</div>
+
+        ${Array.isArray(cluster.children) && cluster.children.length
+          ? `<details class="mt-4">
+               <summary class="cursor-pointer text-sm text-blue-700">Show children (${cluster.children.length})</summary>
+               <div class="mt-3 grid md:grid-cols-2 gap-2">
+                 ${cluster.children.map(c => `
+                    <div class="border rounded-xl p-3">
+                      <div class="mono text-sm">${short(c.address || "")}
+                        ${c.address ? `<button class="ml-2 text-xs text-blue-600 underline" onclick='copy("${c.address}")'>copy</button>` : ""}
+                      </div>
+                      <div class="text-xs text-slate-500 mt-1">funded: ${fmt(c.amount ?? 0)} ${token}</div>
+                      ${c.first_swap_at ? `<div class="text-xs text-slate-500">first swap: ${c.first_swap_at}</div>` : ""}
+                    </div>`).join("")}
+               </div>
+             </details>`
+          : ""
+        }
+      </div>`;
+    }
+
+    function showSummary(data) {
+      $('#summary').classList.remove('hidden');
+      $('#txCnt').textContent = fmt(data?.total_transactions_analyzed ?? 0);
+      $('#clustersFound').textContent = fmt(data?.summary?.clusters_found ?? data?.clusters?.length ?? 0);
+      $('#totalParents').textContent = fmt(data?.summary?.total_parents ?? 1);
+      $('#totalChildren').textContent = fmt(data?.summary?.total_children ?? 0);
+    }
+
+    function render(data) {
+      const container = $('#results');
+      container.innerHTML = "";
+
+      const clusters = data?.clusters || [];
+      if (!clusters.length) {
+        $('#empty').classList.remove('hidden');
+        return;
+      }
+      $('#empty').classList.add('hidden');
+
+      clusters.forEach(c => {
+        const div = document.createElement('div');
+        div.className = "hover:bg-slate-50";
+        div.innerHTML = row(c);
+        container.appendChild(div);
+      });
+    }
+
+    async function fetchClusters() {
+      const addr = $('#wallet').value.trim();
+      const minChildren = +$('#minChildren').value || 5;
+      const fundingWindow = +$('#fundingWindow').value || 5;
+
+      if (!addr) {
+        alert("Please enter a wallet address");
+        return;
+      }
+
+      $('#status').textContent = "Loading…";
+      try {
+        const url = `${API_BASE}/api/v1/wallets/cluster-detection/${addr}?min_children=${minChildren}&funding_window=${fundingWindow}`;
+        const res = await fetch(url);
+        if (!res.ok) {
+          const text = await res.text();
+          throw new Error(`${res.status}: ${text}`);
+        }
+        const data = await res.json();
+        showSummary(data);
+        render(data);
+        $('#status').textContent = `OK • ${new Date().toLocaleTimeString()}`;
+        $('#lastRefreshed').textContent = `Last refreshed: ${new Date().toLocaleTimeString()}`;
+        // Persist params to URL for easy sharing
+        const qp = new URLSearchParams({ a: addr, m: minChildren, w: fundingWindow });
+        history.replaceState({}, "", `#${qp.toString()}`);
+      } catch (e) {
+        console.error(e);
+        $('#status').textContent = `Error: ${e.message}`;
+      }
+    }
+
+    // Wire up
+    $('#fetchBtn').addEventListener('click', fetchClusters);
+
+    // Auto-refresh
+    let timer = null;
+    $('#autoRefresh').addEventListener('change', () => {
+      clearInterval(timer);
+      if ($('#autoRefresh').checked) {
+        const secs = Math.max(10, +$('#refreshSec').value || 30);
+        timer = setInterval(fetchClusters, secs * 1000);
+      }
+    });
+
+    // Load defaults from URL hash if present
+    (function initFromHash() {
+      const hash = location.hash.replace(/^#/, "");
+      const params = new URLSearchParams(hash);
+      if (params.get("a")) $('#wallet').value = params.get("a");
+      if (params.get("m")) $('#minChildren').value = params.get("m");
+      if (params.get("w")) $('#fundingWindow').value = params.get("w");
+    })();
+  </script>
+</body>
+</html>
