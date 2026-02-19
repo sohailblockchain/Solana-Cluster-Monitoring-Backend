@@ -3,7 +3,7 @@
 
 
 ## Contributing
-Contributions are welcome!
+Contributions are welcome
 
 A comprehensive FastAPI backend for real-time monitoring and detection of coordinated wallet clusters on the Solana blockchain. This system identifies parent wallets that fund multiple child wallets within short time windows, tracks their token trading activities, and provides detailed analytics for blockchain analysis.
 
